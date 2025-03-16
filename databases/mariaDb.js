@@ -5,7 +5,7 @@ const pool = mariadb.createPool({
     port: 3306,
     user: 'root',
     password: 'root',
-    database: 'Movie',
+    database: 'BookStore',
     connectionLimit: 10  // 풀에서 사용할 최대 연결 수
 });
 
