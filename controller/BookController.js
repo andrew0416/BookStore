@@ -5,15 +5,48 @@ dotenv.config();
 
 
 const getBooks = async (req, res) => {
-    let sql = "SELECT * FROM books";
+
+
+    let {category, recent, limit, currentPage } = req.query
+
+    let l = limit
+    let c = currentPage
+    if(l == undefined) {
+        l = 8
+    }
+    if(c == undefined) {
+        c = 0
+    }
+
+    let offset = l * (c);
+
+    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id";
+
     let values = []
 
-    let params = req.query
-    if (params.category != undefined){
-        sql += " WHERE (category_id & ?) = ?";
-        let id = parseInt(params.category)
-        values = [id, id]
+    if ((category == undefined) && (recent == undefined)){
+        values = []
+    } else {
+        let cnt = 0
+        sql += " WHERE"
+
+        if(category){
+            cnt++
+            sql += " (category_id & ?) = ?";
+            let id = parseInt(category)
+            values.push(id, id)
+        }
+
+        if(recent === 'true'){
+            if(cnt != 0) {
+                sql += " AND"
+            }
+            cnt++
+            sql += " pub_date BETWEEN DATE_SUB(NOW(), INTERVAL 1 MONTH) AND NOW()";
+        }
     }
+    sql += " GROUP BY b.id LIMIT ? OFFSET ?";
+    values.push(l, offset)
 
     mariaDB.getConnection(async (err, db) => {
         db.query(sql, values ,(err, results) => {
@@ -29,28 +62,13 @@ const getBooks = async (req, res) => {
 }
 
 const getBookDetail = async (req, res) => {
-    let sql = "SELECT * FROM books WHERE id=?";
+    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id WHERE b.id=? GROUP BY b.id";
+
     let {id} = req.params;
     id = parseInt(id);
 
     mariaDB.getConnection(async (err, db) => {
         db.query(sql, id ,(err, results) => {
-            if (err) {
-                console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST).end();
-            }
-
-            res.status(StatusCodes.OK).json(results)
-
-        });
-    });
-}
-
-const category = async (req, res) => {
-    let sql = "SELECT * FROM category"
-
-    mariaDB.getConnection(async (err, db) => {
-        db.query(sql, (err, results) => {
             if (err) {
                 console.log(err);
                 return res.status(StatusCodes.BAD_REQUEST).end();
