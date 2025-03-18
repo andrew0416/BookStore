@@ -20,7 +20,7 @@ const getBooks = async (req, res) => {
 
     let offset = l * (c);
 
-    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id";
+    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories, (SELECT COUNT(*) AS likes FROM likes WHERE bid=b.id) AS likes FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id";
 
     let values = []
 
@@ -62,13 +62,16 @@ const getBooks = async (req, res) => {
 }
 
 const getBookDetail = async (req, res) => {
-    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id WHERE b.id=? GROUP BY b.id";
+
+    let sql = "SELECT b.*, GROUP_CONCAT(c.name ORDER BY c.id ASC SEPARATOR ', ') AS categories, (SELECT COUNT(*) AS likes FROM likes WHERE bid = b.id) AS likes ,(SELECT EXISTS (SELECT * FROM likes WHERE uid = ? AND bid = b.id)) AS user_like FROM books b LEFT JOIN category c ON (b.category_id & c.id) = c.id WHERE b.id=? GROUP BY b.id";
 
     let {id} = req.params;
-    id = parseInt(id);
+    let {uid} = req.body;
+    
+    let values = [uid, id]
 
     mariaDB.getConnection(async (err, db) => {
-        db.query(sql, id ,(err, results) => {
+        db.query(sql, values ,(err, results) => {
             if (err) {
                 console.log(err);
                 return res.status(StatusCodes.BAD_REQUEST).end();
