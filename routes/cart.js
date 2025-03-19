@@ -2,13 +2,13 @@ var express = require('express');
 var router = express.Router();
 var { addCartitems, removeCartitems, getCartitems } = require('../controller/CartController')
 
-//join
+// 장바구니 보기
 router.get('/', getCartitems);
 
-//login
+// 장바구니 추가
 router.post('/', addCartitems);
 
-// request reset
+// 장바구니 삭제
 router.delete('/', removeCartitems);
 
 
