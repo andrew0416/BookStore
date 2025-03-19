@@ -1,9 +1,15 @@
 var express = require('express');
 var router = express.Router();
+var { addCartitems, removeCartitems, getCartitems } = require('../controller/CartController')
 
-/* GET users listing. */
-router.get('/', function(req, res, next) {
-  res.send('respond with a resource');
-});
+//join
+router.get('/', getCartitems);
+
+//login
+router.post('/', addCartitems);
+
+// request reset
+router.delete('/', removeCartitems);
+
 
 module.exports = router;
