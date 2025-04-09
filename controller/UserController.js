@@ -36,7 +36,7 @@ const login = async (req, res) => {
         db.query(sql, email, (err, results) => {
             if (err) {
                 console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST),end();
+                return res.status(StatusCodes.BAD_REQUEST).end();
             }
 
             const loginUser = results[0];
@@ -73,7 +73,7 @@ const requestReset = async (req, res) => {
         db.query(sql, email, (err, results) => {
             if (err) {
                 console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST),end();
+                return res.status(StatusCodes.BAD_REQUEST).end();
             }
 
             const user = results[0];
@@ -103,7 +103,19 @@ const requestReset = async (req, res) => {
 }
 
 const resetPassword = async (req, res) => {
-    const {email, password} = req.body;
+    const {password} = req.body;
+    let email;
+
+    const token = req.cookies.token;
+    try {
+        const payload = jwt.verify(token, process.env.PRIVATE_KEY);
+        if (payload.issuer !== 'resetPW') throw new Error();
+        email = payload.email;
+    } catch (err) {
+    return res.status(StatusCodes.UNAUTHORIZED).end();
+    }
+
+
     let sql = 'UPDATE users SET password = ?, salt = ? WHERE email = ?;';
 
     const salt = crypto.randomBytes(16).toString('base64');
@@ -115,7 +127,7 @@ const resetPassword = async (req, res) => {
         db.query(sql, values, (err, results) => {
             if (err) {
                 console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST),end();
+                return res.status(StatusCodes.BAD_REQUEST).end();
             }
 
             if(results.affectedRows == 0) {

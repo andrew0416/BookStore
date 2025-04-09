@@ -3,121 +3,108 @@ const {StatusCodes} = require('http-status-codes')
 const dotenv = require('dotenv')
 dotenv.config();
 
-const order = async (req, res) => {
-    const { uid, address, receiver, contact } = req.body;
+const getUidFromToken = (token, callback) => {
+    try {
+        const payload = jwt.verify(token, process.env.PRIVATE_KEY);
+        if (payload.issuer !== 'login') throw new Error();
+        const email = payload.email;
 
-    // 입력값 체크
-    if (!uid || !address || !receiver || !contact) {
+        const sql = 'SELECT id FROM users WHERE email = ?';
+
+        mariaDB.getConnection((err, db) => {
+            if (err) return callback(err, null);
+            db.query(sql, [email], (err, results) => {
+                db.release();
+                if (err || results.length === 0) return callback(err || new Error("User not found"), null);
+                return callback(null, results[0].id);
+            });
+        });
+    } catch (err) {
+        return callback(err, null);
+    }
+};
+
+const order = async (req, res) => {
+    const { address, receiver, contact } = req.body;
+    const token = req.cookies.token;
+
+    if (!address || !receiver || !contact) {
         return res.status(StatusCodes.BAD_REQUEST).end();
     }
 
-    // 1. 배송 정보 등록
-    let deliverySql = "INSERT INTO delivery (address, receiver, contact) VALUES (?, ?, ?)";
-    let deliveryValues = [address, receiver, contact];
-
-    mariaDB.getConnection((err, db) => {
+    getUidFromToken(token, (err, uid) => {
         if (err) {
             console.log(err);
-            return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
+            return res.status(StatusCodes.UNAUTHORIZED).end();
         }
 
-        db.query(deliverySql, deliveryValues, (err, deliveryResults) => {
+        let deliverySql = "INSERT INTO delivery (address, receiver, contact) VALUES (?, ?, ?)";
+        let deliveryValues = [address, receiver, contact];
+
+        mariaDB.getConnection((err, db) => {
             if (err) {
                 console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST).end();
+                return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
             }
 
-            // 배송 정보가 정상적으로 등록되면, delivery 테이블의 id를 변수에 저장
-            let did = deliveryResults.insertId;
+            db.query(deliverySql, deliveryValues, (err, deliveryResults) => {
+                if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-            // 2. 빈 주문 정보를 orders 테이블에 등록
-            let orderSql = "INSERT INTO orders (created_at, uid, did) VALUES (?, ?, ?)";
-            let orderValues = [new Date(), uid, did];
+                let did = deliveryResults.insertId;
+                let orderSql = "INSERT INTO orders (created_at, uid, did) VALUES (?, ?, ?)";
+                let orderValues = [new Date(), uid, did];
 
-            db.query(orderSql, orderValues, (err, orderResults) => {
-                if (err) {
-                    console.log(err);
-                    return res.status(StatusCodes.BAD_REQUEST).end();
-                }
+                db.query(orderSql, orderValues, (err, orderResults) => {
+                    if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-                // 생성된 주문의 id를 얻음
-                let oid = orderResults.insertId;
-                let title = ''; // 대표 책 제목을 저장할 변수
-                let totalQuantity = 0;
-                let totalPrice = 0;
-                let orderedBooks = [];
+                    let oid = orderResults.insertId;
+                    let title = '';
+                    let totalQuantity = 0;
+                    let totalPrice = 0;
 
-                // 3. 장바구니에서 해당 사용자 uid에 대한 모든 항목 조회
-                let cartSql = "SELECT bid, counts FROM carts WHERE uid = ?";
-                let cartValues = [uid];
+                    let cartSql = "SELECT bid, counts FROM carts WHERE uid = ?";
+                    db.query(cartSql, [uid], (err, cartResults) => {
+                        if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-                db.query(cartSql, cartValues, (err, cartResults) => {
-                    if (err) {
-                        console.log(err);
-                        return res.status(StatusCodes.BAD_REQUEST).end();
-                    }
+                        if (cartResults.length === 0) {
+                            return res.status(StatusCodes.BAD_REQUEST).send("장바구니가 비어있습니다.");
+                        }
 
-                    // 4. orderList 테이블에 각 세부 도서 정보 추가
-                    cartResults.forEach((cart, index) => {
-                        let bid = cart.bid;
-                        let counts = cart.counts;
+                        let doneCount = 0;
 
-                        // books 테이블에서 가격 정보 가져오기
-                        let bookSql = "SELECT price, title FROM books WHERE id = ?";
-                        db.query(bookSql, [bid], (err, bookResults) => {
-                            if (err) {
-                                console.log(err);
-                                return res.status(StatusCodes.BAD_REQUEST).end();
-                            }
+                        cartResults.forEach((cart, index) => {
+                            let { bid, counts } = cart;
 
-                            let price = bookResults[0].price;
-                            let bookTitle = bookResults[0].title;
-                            let totalBookPrice = price * counts;
+                            let bookSql = "SELECT price, title FROM books WHERE id = ?";
+                            db.query(bookSql, [bid], (err, bookResults) => {
+                                if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-                            // 첫 번째 책의 제목을 대표 책 제목으로 설정
-                            if (index === 0) {
-                                title = bookTitle;
-                            }
+                                let price = bookResults[0].price;
+                                let bookTitle = bookResults[0].title;
 
-                            // 주문의 총 가격과 총 수량 계산
-                            totalQuantity += counts;
-                            totalPrice += totalBookPrice;
+                                if (index === 0) title = bookTitle;
+                                totalQuantity += counts;
+                                totalPrice += price * counts;
 
-                            // orderedBook 테이블에 세부 도서 정보 저장
-                            let orderedBookSql = "INSERT INTO orderList (oid, bid, counts) VALUES (?, ?, ?)";
-                            let orderedBookValues = [oid, bid, counts];
+                                let orderedBookSql = "INSERT INTO orderList (oid, bid, counts) VALUES (?, ?, ?)";
+                                db.query(orderedBookSql, [oid, bid, counts], (err) => {
+                                    if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-                            db.query(orderedBookSql, orderedBookValues, (err) => {
-                                if (err) {
-                                    console.log(err);
-                                    return res.status(StatusCodes.BAD_REQUEST).end();
-                                }
-                            });
+                                    doneCount++;
+                                    if (doneCount === cartResults.length) {
+                                        let updateOrderSql = "UPDATE orders SET total_counts = ?, total_price = ?, title = ? WHERE id = ?";
+                                        db.query(updateOrderSql, [totalQuantity, totalPrice, title, oid], (err) => {
+                                            if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-                            // 모든 세부 도서 정보를 처리한 후, orders 테이블을 업데이트
-                            if (cartResults.indexOf(cart) === cartResults.length - 1) {
-                                let updateOrderSql = "UPDATE orders SET total_counts = ?, total_price = ?, title = ? WHERE id = ?";
-                                let updateOrderValues = [totalQuantity, totalPrice, title, oid];
-
-                                db.query(updateOrderSql, updateOrderValues, (err) => {
-                                    if (err) {
-                                        console.log(err);
-                                        return res.status(StatusCodes.BAD_REQUEST).end();
+                                            let deleteCartSql = "DELETE FROM carts WHERE uid = ?";
+                                            db.query(deleteCartSql, [uid], (err) => {
+                                                if (err) return res.status(StatusCodes.BAD_REQUEST).end();
+                                                res.status(StatusCodes.CREATED).end();
+                                            });
+                                        });
                                     }
-
-                                    // 5. 장바구니 항목 삭제
-                                    let deleteCartSql = "DELETE FROM carts WHERE uid = ?";
-                                    db.query(deleteCartSql, [uid], (err) => {
-                                        if (err) {
-                                            console.log(err);
-                                            return res.status(StatusCodes.BAD_REQUEST).end();
-                                        }
-
-                                        // 장바구니 항목을 모두 처리한 후 성공 응답
-                                        res.status(StatusCodes.CREATED).end();
-                                    });
                                 });
-                            }
+                            });
                         });
                     });
                 });
@@ -127,55 +114,47 @@ const order = async (req, res) => {
 };
 
 const getOrderList = async (req, res) => {
-    let { uid } = req.body;
+    const token = req.cookies.token;
 
-    if (!uid) {
-        return res.status(StatusCodes.BAD_REQUEST).end();
-    }
+    getUidFromToken(token, (err, uid) => {
+        if (err) return res.status(StatusCodes.UNAUTHORIZED).end();
 
-    let sql = `
-        SELECT 
-            o.id AS oid, 
-            o.created_at, 
-            o.title, 
-            o.total_price AS totalPrice, 
-            o.total_counts AS totalCounts, 
-            d.address, 
-            d.receiver, 
-            d.contact
-        FROM orders o
-        JOIN delivery d ON o.did = d.id
-        WHERE o.uid = ?;
-    `;
-    
-    let values = [uid];
+        let sql = `
+            SELECT 
+                o.id AS oid, 
+                o.created_at, 
+                o.title, 
+                o.total_price AS totalPrice, 
+                o.total_counts AS totalCounts, 
+                d.address, 
+                d.receiver, 
+                d.contact
+            FROM orders o
+            JOIN delivery d ON o.did = d.id
+            WHERE o.uid = ?;
+        `;
 
-    mariaDB.getConnection((err, db) => {
-        if (err) {
-            console.log(err);
-            return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
-        }
+        mariaDB.getConnection((err, db) => {
+            if (err) return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
 
-        db.query(sql, values, (err, results) => {
-            if (err) {
-                console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST).end();
-            }
+            db.query(sql, [uid], (err, results) => {
+                if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-            let formattedResults = results.map(row => ({
-                oid: row.oid,
-                created_at: row.created_at,
-                title: row.title,
-                totalPrice: row.totalPrice,
-                totalCounts: row.totalCounts,
-                delivery: {
-                    address: row.address,
-                    receiver: row.receiver,
-                    contact: row.contact
-                }
-            }));
+                const formatted = results.map(row => ({
+                    oid: row.oid,
+                    created_at: row.created_at,
+                    title: row.title,
+                    totalPrice: row.totalPrice,
+                    totalCounts: row.totalCounts,
+                    delivery: {
+                        address: row.address,
+                        receiver: row.receiver,
+                        contact: row.contact
+                    }
+                }));
 
-            res.status(StatusCodes.OK).json(formattedResults);
+                res.status(StatusCodes.OK).json(formatted);
+            });
         });
     });
 };
@@ -183,9 +162,7 @@ const getOrderList = async (req, res) => {
 const getOrderDetail = async (req, res) => {
     let { id } = req.params;
 
-    if (!id) {
-        return res.status(StatusCodes.BAD_REQUEST).end();
-    }
+    if (!id) return res.status(StatusCodes.BAD_REQUEST).end();
 
     let sql = `
         SELECT 
@@ -198,22 +175,14 @@ const getOrderDetail = async (req, res) => {
         JOIN books b ON ol.bid = b.id
         WHERE ol.oid = ?;
     `;
-    
-    let values = [id];
 
     mariaDB.getConnection((err, db) => {
-        if (err) {
-            console.log(err);
-            return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
-        }
+        if (err) return res.status(StatusCodes.INTERNAL_SERVER_ERROR).end();
 
-        db.query(sql, values, (err, results) => {
-            if (err) {
-                console.log(err);
-                return res.status(StatusCodes.BAD_REQUEST).end();
-            }
+        db.query(sql, [id], (err, results) => {
+            if (err) return res.status(StatusCodes.BAD_REQUEST).end();
 
-            let formattedResults = results.map(row => ({
+            const formatted = results.map(row => ({
                 bid: row.bid,
                 title: row.title,
                 author: row.author,
@@ -221,7 +190,7 @@ const getOrderDetail = async (req, res) => {
                 count: row.count
             }));
 
-            res.status(StatusCodes.OK).json(formattedResults);
+            res.status(StatusCodes.OK).json(formatted);
         });
     });
 };
